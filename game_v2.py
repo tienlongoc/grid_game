@@ -16,7 +16,9 @@
 # Things like calculate non-final/final score and extract features don't have to be exclusive in player class, we could probably make a parent class to do this. Or maybe put it all in the Board class?
 
 from termcolor import colored
-from numpy import random
+from operator import add
+import random
+import numpy as np
 import copy
 
 def normalise(l):
@@ -24,12 +26,14 @@ def normalise(l):
 
 
 class Player:
-    def __init__(self, player_number, hand, color, target_function_weight_vector = normalise([1]*7)):
+    def __init__(self, player_number, hand, color, playing_strategy_vector = normalise([1]*7), play_random_moves = False, is_ai = False):
         self.hand = hand
         self.color = color
         self.player_number = player_number
         self.score = 0
-        self.target_function_weight_vector = target_function_weight_vector
+        self.playing_strategy_vector = playing_strategy_vector
+        self.play_random_moves = play_random_moves
+        self.is_ai = is_ai
 
     def __repr__(self):
         return str(self.player_number)
@@ -60,7 +64,7 @@ class Player:
             open_files = 0
             for row in board.board:
                 for node in row:
-                    if node.owner == player:
+                    if node.owner.player_number == player.player_number:
                         open_files += sum([1 for adjacent_node in node.adjacent_nodes if adjacent_node.value == 0])
             return open_files
         x.append(num_open_files(self))
@@ -70,7 +74,7 @@ class Player:
     def compute_non_final_score(self, feature_vector):
         # Compute move score based on our current approximation of target function weight vector
         # Maybe I want to normalise this? As the final score is normalised by 100.
-        return sum([i*j for (i,j) in zip(self.target_function_weight_vector, feature_vector)])
+        return sum([i*j for (i,j) in zip(self.playing_strategy_vector, feature_vector)])
 
     def compute_final_score(self, opponent):
         # When the game is finished, we can score player performance with absolute certainty. This will be used in back tracking lms weight updates.
@@ -82,7 +86,16 @@ class Player:
             game_score += 100
         return game_score
 
-    def choose_move(self, board, opponent):
+    def human_input_move(self, board):
+        move = []
+        while not board.validate_move(self, move):
+            move = []
+            move.append(input('Select row coordinate\n'))
+            move.append(input('Select column coordinate\n'))
+            move.append(input('Select card to play\n'))
+        return move
+
+    def ai_choose_strategic_move(self, board, opponent):
         legal_moves = self.find_legal_moves(board)
         legal_move_scores = []
         for move in legal_moves:
@@ -90,16 +103,21 @@ class Player:
             tmp_board.make_move(self, move)
             feature_vector = self.extract_features_from_board(tmp_board, opponent)
             legal_move_scores.append(self.compute_non_final_score(feature_vector))
-#       return legal_moves[legal_move_scores.index(max(legal_move_scores))] # naive version of function that just chooses move with max score. Instead we will try to make a choice based on probabilities, rather than max score
-        return legal_moves[random.choice(len(legal_moves), p = normalise(legal_move_scores))]
+        return legal_moves[legal_move_scores.index(max(legal_move_scores))] # naive version of function that just chooses move with max score.
+       # return legal_moves[np.random.choice(len(legal_moves), p = normalise(legal_move_scores))] # try to make a choice based on probabilities, rather than max score. But be careful as normalise(legal_move_scores) might contain negative values, we probably want to map it to range(0,1)
 
-
-
-    def choose_random_move(self, board):
+    def ai_choose_random_move(self, board):
         # We could use this to play against a player who chooses random moves
         legal_moves = self.find_legal_moves(board)
         return random.choice(legal_moves)
 
+    def choose_move(self, board, opponent):
+        if not self.is_ai:
+            return self.human_input_move(board)
+        elif self.play_random_moves:
+            return self.ai_choose_random_move(board)
+        else:
+            return self.ai_choose_strategic_move(board, opponent)
 
 class Node:
     def __init__(self):
@@ -172,6 +190,38 @@ class Board:
                 num_flipped += 1
         return num_flipped
 
+def game(dimension, player1, player2):
+    board = Board(dimension)
+    turn = 1
+    print('Begin game\n')
+
+    current_player = player1
+    next_player = player2
+
+    while turn < dimension**2+1:
+        print('Turn: ' + str(turn))
+        board.print_board()
+        print('\n')
+        print('Player 1\'s hand: ', player1.hand)
+        print('Player 2\'s hand: ', player2.hand)
+        print('\n')
+        print('Player', current_player, '\'s turn')
+        move = current_player.choose_move(board, next_player)
+        num_flipped = board.make_move(current_player, move)
+        current_player.score += 1 + num_flipped
+        next_player.score -= num_flipped
+        current_player.hand.remove(move[2])
+
+        current_player, next_player = next_player, current_player
+        turn += 1
+        
+    board.print_board()
+
+    print('Player 1\'s score:', player1.score)
+    print('Player 2\'s score:', player2.score)
+
+
+
 def human_game(dimension = 3):
     player1 = Player(1, list(range(1, (dimension**2 + 1)//2 + 1)), 'red')
     player2 = Player(2, list(range(2 - ((dimension + 1) % 2), (dimension**2 + 1)//2 + 1)), 'blue')
@@ -191,13 +241,7 @@ def human_game(dimension = 3):
         print('Player 2\'s hand: ', player2.hand)
         print('\n')
         print('Player', current_player, '\'s turn')
-        move = []
-        while not board.validate_move(current_player, move):
-            move = []
-            move.append(input('Please select row coordinate\n'))
-            move.append(input('Please select column coordinate\n'))
-            move.append(input('Please select card to play\n'))
-
+        move = current_player.choose_move(board, next_player)
         num_flipped = board.make_move(current_player, move)
         current_player.score += 1 + num_flipped
         next_player.score -= num_flipped
@@ -211,7 +255,7 @@ def human_game(dimension = 3):
     print('Player 1\'s score:', player1.score)
     print('Player 2\'s score:', player2.score)
 
-def game_vs_player1(player1 = Player(1, list(range(1,6)), 'red'), player2 = Player(2, list(range(2,6)), 'blue'), board = Board(3), target_function_weight_vector = normalise([1]*7)):
+def game_vs_player1(player1 = Player(1, list(range(1,6)), 'red'), player2 = Player(2, list(range(2,6)), 'blue'), board = Board(3), playing_strategy_vector = normalise([1]*7)):
     turn = 1
 
     print('Begin game\n')
@@ -266,27 +310,29 @@ class Trainer:
         game_history = []
         
         turn = 1
-        num_turns = dimension ** 2
+        num_turns = self.dimension ** 2
 
-        board = Board(dimension)
+        board = Board(self.dimension)
         current_player = player1
         next_player = player2
 
         while turn <= num_turns:
             temp_board = copy.deepcopy(board)
-            game_history.append(temp_board)
+            temp_current_player = copy.deepcopy(current_player)
+            temp_next_player = copy.deepcopy(next_player)
+            game_history.append([temp_board, temp_current_player, temp_next_player])
             chosen_move = current_player.choose_move(board, next_player)
             num_flipped_cards = board.make_move(current_player, chosen_move)
-            current_player.carde += 1 + num_flipped_cards
+            current_player.score += 1 + num_flipped_cards
             next_player.score -= num_flipped_cards
             current_player.hand.remove(chosen_move[2])
             current_player, next_player = next_player, current_player
             turn += 1
 
         final_game_status = [0,0,1]
-        if self.player1.score > self.player2.score:
+        if player1.score > player2.score:
             final_game_status = [1,0,0]
-        elif self.player1.score < self.player2.score:
+        elif player1.score < player2.score:
             final_game_status = [0,1,0]
 
         return game_history, final_game_status
@@ -301,13 +347,14 @@ class Trainer:
 
             # We use the intermediate board state & our current approximation its the target value as the training value for the current target value function
             # This is equation 1.1 on Tom Mitchell's book
-            feature_vector = player_to_train.extractFeatrues(game_history[turn], trianing_opponent)
+            # game_history[turn][0] records board state ; game_history[turn][1] records player_to_train's state ; game_history[turn][2] records opponent's state
+            feature_vector = game_history[turn][1].extract_features_from_board(game_history[turn][0], game_history[turn][2])
             associated_score = player_to_train.compute_non_final_score(feature_vector)
             training_samples.append([feature_vector, associated_score])
 
         # Game has finished -- we can work out the absolute scores here
-        feature_vector = player_to_train.extractFeatures(game_history[-1], training_opponent)
-        associated_score = play_to_train.compute_final_score(final_game_status)
+        feature_vector = player_to_train.extract_features_from_board(game_history[-1][0], training_opponent)
+        associated_score = player_to_train.compute_final_score(training_opponent) # This works because training_opponent has passed through playing function from before, and hence should have the correct score recorded
         training_samples.append([feature_vector, associated_score])
 
         return training_samples
@@ -315,15 +362,14 @@ class Trainer:
     # Now that we have the training recommendation from the critic, we will use it to improve the target playing strategy function, by updating its linear weights
     # Improvement strategy is chosen to be LMS weight update
     # If we want, we can tweak alpha, which essentially means "how much adjustment I should make based on results of each game"
-    def update_playing_strategy_vector(self, training_samples, player_to_train, alpha = 0.1):
-        vector_to_update = player_to_train.playing_strategy_vector
-        for i in range(len(training_samples)):
+    def update_playing_strategy_vector(self, training_samples, playing_strategy_vector, alpha = 0.1):
+        for i in range(len(training_samples)-1):
             training_score = training_samples[i+1][1]
             idealised_score = training_samples[i][1]
             training_feature_vector = training_samples[i][0]
 
             # Implementation of LMS weight update rule described in Tom Mitchell's text
-            # w_ is the weight vector: this is the vector we want to use to guide playing strategy = vector_to_update
+            # w_ is the weight vector: this is the vector we want to use to guide playing strategy = playing_strategy_vector
             # x_ is the feature vector: e.g. x_1 is player_to_train's score, etc = player_to_train.extract_features(board state b) = training_featrue_vector
             # We improve w_ thus -- for each step in game history (from player_to_train's point of view, i.e. opponent's turns are forgotten) with board state b:
             # w_ = w_ + alpha( V_train(b) - V^(b) )x_
@@ -331,9 +377,9 @@ class Trainer:
             # And V_train(b) is taken to be V^(b_successor) (we will use board state after opponent's made the move as b_successor, i.e. turn+2) = training_score
             # For the last turn before game end, we will take realised V^(b_successor) to be V_train(b) -- in this case, we know with certainty how the game ends, so we will use the game's end state to workout ternary options for V^(b_successor) (win/lose/draw), instead of using our current idealised calculation per score evaluation via playing_strategy_vector. This is the key weight adjustment that will eventually trickle down to better weights for playing_strategy_vector in relation to earlier game states.
             # I can see that this algorithm does help adjust our playing_strategy_vector based on a reward mechanism, but I'm not completely clear on why this would end up minimising the LMS error. Tom Mitchell says he'll discuss this aspect in chapter 4.
-            vector_to_update = list(map(add, vector_to_update,  [x * alpha * (training_score - idealised_score) for x in training_feature_vector]))
+            playing_strategy_vector = normalise(list(map(add, playing_strategy_vector,  [x * alpha * (training_score - idealised_score) for x in training_feature_vector])))
 
-        return vector_to_update
+        return playing_strategy_vector
 
 
     def train(self):
@@ -345,13 +391,13 @@ class Trainer:
 
         while training_game_count < self.num_train:
             if self.player_num_to_train == 1:
-                player1 = Player(1, list(range(1, (self.dimension**2 + 1)//2 + 1)), 'red', playing_strategy_vector = playing_strategy_vector)
-                player2 = Player(2, list(range(2 - ((self.dimension + 1) % 2), (self.dimension**2 + 1)//2 + 1)), 'blue', play_random_moves = True)
+                player1 = Player(1, list(range(1, (self.dimension**2 + 1)//2 + 1)), 'red', playing_strategy_vector = playing_strategy_vector, is_ai = True)
+                player2 = Player(2, list(range(2 - ((self.dimension + 1) % 2), (self.dimension**2 + 1)//2 + 1)), 'blue', is_ai = True, play_random_moves = True)
                 player_to_train = player1
                 training_opponent = player2
             else: # self.player_num_to_train == 2
-                player1 = Player(1, list(range(1, (self.dimension**2 + 1)//2 + 1)), 'red', play_random_moves = True)
-                player2 = Player(2, list(range(2 - ((self.dimension + 1) % 2), (self.dimension**2 + 1)//2 + 1)), 'blue', playing_strategy_vector)
+                player1 = Player(1, list(range(1, (self.dimension**2 + 1)//2 + 1)), 'red', is_ai = True, play_random_moves = True)
+                player2 = Player(2, list(range(2 - ((self.dimension + 1) % 2), (self.dimension**2 + 1)//2 + 1)), 'blue', playing_strategy_vector = playing_strategy_vector, is_ai = True)
                 player_to_train = player2
                 training_opponent = player1
 
@@ -359,9 +405,9 @@ class Trainer:
 
             game_status_count = list(map(add, game_status_count, final_game_status))
 
-            training_samples = critique_training_history(game_history, player_to_train, training_opponent, final_game_status)
+            training_samples = self.critique_training_history(game_history, player_to_train, training_opponent, final_game_status)
 
-            playing_strategy_vector = update_playing_strategy_vector(training_samples)
+            playing_strategy_vector = self.update_playing_strategy_vector(training_samples, playing_strategy_vector)
 
             training_game_count += 1
 
@@ -383,7 +429,7 @@ if __name__ == "__main__":
     board_selection = ''
     num_train = ''
     while play_selection not in ['1','2','3']:
-        play_selection = input("Please select an option:\n1: Human vs Human\n2: Human vs AI\n3: AI vs Human\n")
+        play_selection = input("Please select an option:\n1: Human vs Human\n2: AI (player 1) vs Human (player 2)\n3: Human (player 1) vs AI (player 2)\n")
     while board_selection not in ['3','4','5','6','7']:
         board_selection = input("Please select board size (3-7)\n")
     board_selection = int(board_selection)
@@ -396,10 +442,17 @@ if __name__ == "__main__":
         if num_train < 1:
             num_train = ''
     if play_selection == '1':
-        human_game(dimension = board_selection)
+        player1 = Player(1, list(range(1, (board_selection**2 + 1)//2 + 1)), 'red')
+        player2 = Player(2, list(range(2 - ((board_selection + 1) % 2), (board_selection**2 + 1)//2 + 1)), 'blue')
     elif play_selection == '2':
-        player_strategy_vector = Trainer(2, num_train, board_selection).train()
-        game_vs_player2(playing_strategy_vector = train(2, num_train, board_selection), dimension = board_selection)
+        playing_strategy_vector = Trainer(2, num_train, board_selection).train()
+        player1 = Player(1, list(range(1, (board_selection**2 + 1)//2 + 1)), 'red', playing_strategy_vector = playing_strategy_vector, is_ai = True)
+        player2 = Player(2, list(range(2 - ((board_selection + 1) % 2), (board_selection**2 + 1)//2 + 1)), 'blue')
     elif play_selection == '3':
-        game_vs_player1(playing_strategy_vector = train(1, num_train, board_seletion), dimension = board_selection)
+        playing_strategy_vector = Trainer(1, num_train, board_selection).train()
+        player1 = Player(1, list(range(1, (board_selection**2 + 1)//2 + 1)), 'red')
+        player2 = Player(2, list(range(2 - ((board_selection + 1) % 2), (board_selection**2 + 1)//2 + 1)), 'blue', playing_strategy_vector = playing_strategy_vector, is_ai = True)
+    else:
+        exit()
+    game(board_selection, player1, player2)
 
